@@ -1,0 +1,52 @@
+name: Relógio do content-dash
+
+# Chama o rodízio de stories do content-dash a cada 10 minutos.
+# Roda num repositório PÚBLICO (minutos de Actions ilimitados). Sem segredo: o GitHub
+# emite um token OIDC para este workflow e o app confere repositório e branch
+# (lib/oidc-github.ts no content-dash). Um laço de ~5h40 por execução; a execução da
+# hora seguinte fica na fila e assume quando esta termina, então atraso do agendador
+# do GitHub não abre buraco.
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: write
+
+concurrency:
+  group: relogio
+  cancel-in-progress: false
+
+jobs:
+  bater:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      URL: https://content-dash-liart.vercel.app/api/cron/sync-instagram?modo=rodizio
+    steps:
+      - name: Rodízio a cada 10 minutos
+        run: |
+          fim=$(( $(date +%s) + 340 * 60 ))
+          while [ "$(date +%s)" -lt "$fim" ]; do
+            inicio=$(date +%s)
+            tok=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=content-dash-rodizio" | jq -r .value)
+            code=$(curl -s -o out.txt -w "%{http_code}" --max-time 90 -H "Authorization: Bearer $tok" "$URL")
+            echo "$(date -u +%H:%M) HTTP $code $(head -c 300 out.txt)"
+            espera=$(( 600 - ($(date +%s) - inicio) ))
+            [ "$espera" -gt 0 ] && sleep "$espera"
+          done
+
+      # Repositório público sem commit por 60 dias tem o agendamento desligado pelo GitHub.
+      - uses: actions/checkout@v4
+      - name: Batimento mensal
+        run: |
+          ultimo=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - ultimo )) -gt $(( 30 * 86400 )) ]; then
+            date -u +%FT%TZ > batimento.txt
+            git config user.name "relogio"
+            git config user.email "relogio@users.noreply.github.com"
+            git add batimento.txt && git commit -m "batimento" && git push
+          fi
